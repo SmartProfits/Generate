@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>订单数据统计</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.5;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ccc;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f0f0f0;
+        }
+        .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        .button.save {
+            background-color: #28a745;
+        }
+        .button.save:hover {
+            background-color: #218838;
+        }
+        .page-break {
+            page-break-before: always;
+        }
+        .chart-container {
+            margin-top: 20px;
+            width: 100%;
+            height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <h1>订单数据统计</h1>
+    <p>选择月份并将订单数据粘贴到下方文本框，然后点击“计算统计”按钮。</p>
+    
+    <label for="monthInput">选择月份：</label>
+    <input type="month" id="monthInput" />
+
+    <textarea id="dataInput" placeholder="粘贴订单数据..."></textarea>
+    <button class="button" onclick="processData()">计算统计</button>
+    <button class="button save" onclick="saveAsPDF()">保存为 PDF</button>
+    <div id="results"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.2/html2pdf.bundle.min.js"></script>
+    <script>
+        const PC_TO_CTN_RATIO = 50; // 50 pc = 1 ctn
+        const MAX_ITEMS_IN_CHART = 20; // 图表中显示的最大商品数量
+
+        function processData() {
+            const rawData = document.getElementById('dataInput').value;
+            const selectedMonth = document.getElementById('monthInput').value;
+            const lines = rawData.split('\n');
+            const results = {};
+            const storeTotals = {};
+
+            let monthString = "未选择月份";
+            if (selectedMonth) {
+                const [year, month] = selectedMonth.split("-");
+                monthString = `${year}年${month}月`;
+            }
+
+            lines.forEach(line => {
+                const storeMatch = line.match(/Kedai:\s*(.+)/);
+                const productMatch = line.match(/(.+?)\s*-\s*(\d+)\s*(ctn|pc)/i);
+
+                if (storeMatch) {
+                    currentStore = storeMatch[1].trim();
+                    if (!storeTotals[currentStore]) {
+                        storeTotals[currentStore] = { products: {} };
+                    }
+                }
+
+                if (productMatch) {
+                    const product = productMatch[1].trim();
+                    const quantity = parseInt(productMatch[2]);
+                    const unit = productMatch[3].trim().toLowerCase();
+
+                    const quantityInCtn = unit === 'pc' ? quantity / PC_TO_CTN_RATIO : quantity;
+
+                    if (!results[product]) {
+                        results[product] = 0; // 统一为 ctn
+                    }
+                    results[product] += quantityInCtn;
+
+                    if (!storeTotals[currentStore].products[product]) {
+                        storeTotals[currentStore].products[product] = 0;
+                    }
+                    storeTotals[currentStore].products[product] += quantityInCtn;
+                }
+            });
+
+            displayResults(results, storeTotals, monthString);
+        }
+
+        function displayResults(results, storeTotals, monthString) {
+            const resultDiv = document.getElementById('results');
+            resultDiv.innerHTML = '';
+
+            let html = `<h2>订单数据统计 - ${monthString}</h2>`;
+
+            // 全局商品统计表格
+            html += '<h2>全局商品统计</h2>';
+            html += '<div class="chart-container"><canvas id="globalChart"></canvas></div>';
+            html += '<table><thead><tr><th>商品名称</th><th>数量 (CTN)</th></tr></thead><tbody>';
+            for (const product in results) {
+                html += `<tr>
+                    <td>${product}</td>
+                    <td>${Math.round(results[product])}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+
+            html += '<div class="page-break"></div>';
+
+
+            // 店铺统计表格
+            for (const store in storeTotals) {
+                html += `<div class="page-break"></div>`;
+                html += `<h3>${store}</h3>`;
+                html += `<div class="chart-container"><canvas id="chart-${store}"></canvas></div>`;
+                html += '<table><thead><tr><th>商品名称</th><th>数量 (CTN)</th></tr></thead><tbody>';
+                for (const product in storeTotals[store].products) {
+                    html += `<tr>
+                        <td>${product}</td>
+                        <td>${Math.round(storeTotals[store].products[product])}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+            }
+
+            resultDiv.innerHTML = html;
+
+            // 全局柱状图
+            const sortedGlobalData = Object.entries(results)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, MAX_ITEMS_IN_CHART); // 限制前20项
+            const globalLabels = sortedGlobalData.map(([product]) => product);
+            const globalData = sortedGlobalData.map(([_, data]) => Math.round(data));
+            createBarChart('globalChart', '全局商品统计 (CTN)', globalLabels, globalData);
+
+            // 店铺柱状图
+            for (const store in storeTotals) {
+                const sortedStoreData = Object.entries(storeTotals[store].products)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, MAX_ITEMS_IN_CHART); // 限制前20项
+                const labels = sortedStoreData.map(([product]) => product);
+                const data = sortedStoreData.map(([_, quantity]) => Math.round(quantity));
+                createBarChart(`chart-${store}`, `${store} 商品统计 (CTN)`, labels, data);
+            }
+        }
+
+        function createBarChart(canvasId, title, labels, data) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '数量 (CTN)',
+                            data: data,
+                            backgroundColor: 'rgba(75, 192, 192, 0.7)',
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: title
+                        },
+                        tooltip: {
+                            enabled: true
+                        },
+                        legend: {
+                            display: false
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'top',
+                            formatter: (value) => value,
+                            color: '#444',
+                            font: {
+                                weight: 'bold',
+                                size: 12
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        }
+
+        function saveAsPDF() {
+            const element = document.getElementById('results');
+            const options = {
+                margin: 10,
+                filename: '订单数据统计.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+
+            html2pdf().set(options).from(element).save();
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script>
+</body>
+</html>
